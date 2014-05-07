@@ -154,9 +154,17 @@ function cmdBackfill(client, _, argv)
 	interval = parseInterval(argv[3]);
 	template = JSON.parse(argv[4]);
 
+	backfillChunks(client, series, start, end, interval, template);
+}
+
+function backfillChunks(client, series, start, end, interval, template)
+{
+	var points, timestamp, point;
+	var chunksize = 10000;
 	points = [];
 
-	for (timestamp = start; timestamp < end; timestamp += interval) {
+	for (timestamp = start; timestamp < end &&
+	    points.length < chunksize; timestamp += interval) {
 		point = mod_jsprim.deepCopy(template);
 		point.time = new Date(timestamp);
 		point.count = Math.round(100 * Math.random());
@@ -167,6 +175,9 @@ function cmdBackfill(client, _, argv)
 		if (err)
 			fatal(err);
 		console.error('wrote %d points', points.length);
+		if (timestamp < end)
+			backfillChunks(client, series, timestamp, end,
+			    interval, template);
 	});
 }
 

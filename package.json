@@ -1,0 +1,18 @@
+{
+  "name": "influx-cli",
+  "version": "0.0.0",
+  "description": "experimental command-line interface for influxdb",
+  "bin": {
+      "influx": "./influx"
+  },
+  "dependencies": {
+    "assert-plus": "0.1.5",
+    "bunyan": "0.22.3",
+    "influx": "0.4.0",
+    "jsprim": "0.5.1",
+    "tab": "0.1.0",
+    "verror": "1.4.0"
+  },
+  "author": "Dave Pacheco <dap@joyent.com>",
+  "license": "MIT"
+}

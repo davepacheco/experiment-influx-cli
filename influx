@@ -1,0 +1,305 @@
+#!/usr/bin/env node
+
+/*
+ * influx.js: basic influxdb command-line client
+ */
+
+var mod_events = require('events');
+var mod_fs = require('fs');
+var mod_path = require('path');
+var mod_util = require('util');
+
+var mod_assertplus = require('assert-plus');
+var mod_bunyan = require('bunyan');
+var mod_influx = require('influx');
+var mod_jsprim = require('jsprim');
+var mod_tab = require('tab');
+
+var VError = require('verror');
+
+/* Runtime state */
+var icConfig;
+var icLog;
+var icClient;
+
+/* Static configuration */
+var icArg0 = mod_path.basename(process.argv[1]);
+var icHandlers = {
+    'backfill': {
+	'exec': cmdBackfill,
+	'validate': function (_, argv) {
+		if (argv.length < 5)
+			return (new Error('missing arguments'));
+		if (argv.length > 5)
+			return (new Error('unexpected arguments'));
+
+		try {
+			JSON.parse(argv[4]);
+		} catch (ex) {
+			return (new VError(ex, 'invalid TEMPLATE'));
+		}
+
+		var start, end;
+		start = Date.parse(argv[1]);
+		if (isNaN(start))
+			return (new Error('invalid START'));
+
+		end = Date.parse(argv[2]);
+		if (isNaN(end))
+			return (new Error('invalid END'));
+
+		if (start > end)
+			return (new Error('END cannot precede START'));
+
+		if (isNaN(parseInterval(argv[3])))
+			return (new Error('invalid INTERVAL'));
+
+		return (null);
+	}
+    },
+    'dropseries': {
+	'exec': cmdDropseries,
+	'validate': function (_, argv) {
+		if (argv.length === 0)
+			return (new Error('expected series name'));
+		if (argv.length > 1)
+			return (new Error('unexpected arguments'));
+		return (null);
+	}
+    },
+    'query': {
+        'exec': cmdQuery,
+	'validate': function (_, argv) {
+		if (argv.length === 0)
+			return (new Error('expected query'));
+		if (argv.length > 1)
+			return (new Error('unexpected arguments'));
+		return (null);
+	}
+    },
+    'series': {
+	'exec': cmdSeries,
+        'validate': function (_, argv) {
+		if (argv.length !== 0)
+			return (new Error('unexpected arguments'));
+		return (null);
+	}
+    }
+};
+
+function main()
+{
+	try {
+		icConfig = JSON.parse(mod_fs.readFileSync(
+		    mod_path.join(__dirname, 'config.json')));
+	} catch (ex) {
+		fatal(new VError(ex, 'failed to load config'));
+	}
+
+	icLog = new mod_bunyan({
+	    'name': 'influx',
+	    'level': process.env['LOG_LEVEL'] || 'info'
+	});
+
+	icClient = new InfluxClient(icConfig, icLog);
+	icClient.connect();
+
+	var cmd, argv, handler, error;
+	cmd = process.argv[2];
+	argv = process.argv.slice(3);
+
+	if (!icHandlers.hasOwnProperty(cmd))
+		usage();
+
+	handler = icHandlers[cmd];
+	error = handler.validate(cmd, argv);
+	if (error !== null) {
+		console.error('error: %s', error.message);
+		usage();
+	}
+
+	icClient.on('error', function (err) {
+		console.error('fatal error: %s', err.message);
+	});
+
+	icClient.on('connect', function () {
+		handler.exec(icClient, cmd, argv);
+	});
+}
+
+function usage()
+{
+	console.error('usage: %s backfill SERIES START END INTERVAL TEMPLATE',
+	    icArg0);
+	console.error('       %s dropseries SERIES', icArg0);
+	console.error('       %s series', icArg0);
+	console.error('       %s query QUERY', icArg0);
+	process.exit(2);
+}
+
+function fatal(err)
+{
+	console.error(err.message);
+	process.exit(1);
+}
+
+function cmdBackfill(client, _, argv)
+{
+	var series, start, end, interval, template;
+	var points, timestamp, point;
+
+	series = argv[0];
+	start = Date.parse(argv[1]);
+	end = Date.parse(argv[2]);
+	interval = parseInterval(argv[3]);
+	template = JSON.parse(argv[4]);
+
+	points = [];
+
+	for (timestamp = start; timestamp < end; timestamp += interval) {
+		point = mod_jsprim.deepCopy(template);
+		point.time = new Date(timestamp);
+		point.count = Math.round(100 * Math.random());
+		points.push(point);
+	}
+
+	client.influx().writePoints(series, points, function (err) {
+		if (err)
+			fatal(err);
+		console.error('wrote %d points', points.length);
+	});
+}
+
+function parseInterval(str)
+{
+	return (parseInt(str, 10));
+}
+
+function cmdDropseries(client, _, argv)
+{
+	var series = argv[0];
+	client.influx().dropSeries(series, function (err) {
+		if (err)
+			fatal(new VError(err, 'drop series "%s"', series));
+		console.error('dropped series "%s"', series);
+	});
+}
+
+function cmdQuery(client, _, argv)
+{
+	var query = argv[0];
+	client.influx().query(query, function (err, result) {
+		if (err)
+			fatal(new VError(err, 'query "%s"', query));
+		result.forEach(icDumpTable);
+	});
+}
+
+function icDumpTable(table)
+{
+	var widths, columns;
+
+	widths = table.columns.map(function (v) { return (v.length); });
+	table.points.forEach(function (p) {
+		table.columns.forEach(function (_, i) {
+			if (p[i] === null)
+				p[i] = 'null';
+			widths[i] = Math.max(widths[i], p[i].toString().length);
+		});
+	});
+
+	columns = table.columns.map(function (label, i) {
+		var rv = {
+		    'label': label.toUpperCase(),
+		    'width': widths[i]
+		}
+		if (table.points.length > 0 &&
+		    typeof (table.points[0][i]) == 'number')
+		    	rv['align'] = 'right';
+		return (rv);
+	});
+
+	mod_tab.emitTable({
+	    'stream': process.stdout,
+	    'columns': columns,
+	    'rows': table.points
+	});
+}
+
+function cmdSeries(client)
+{
+	client.influx().getSeriesNames(function (err, series) {
+		if (err)
+			fatal(new VError(err, 'listing series'));
+		series.forEach(function (s) { console.log(s); });
+	});
+}
+
+function InfluxClient(config, log)
+{
+	mod_assertplus.object(config);
+	mod_assertplus.string(config['host']);
+	mod_assertplus.number(config['port']);
+	mod_assertplus.string(config['user']);
+	mod_assertplus.string(config['password']);
+	mod_assertplus.string(config['database']);
+	mod_assertplus.object(log);
+
+	/* immutable configuration */
+	this.ic_host = config['host'];
+	this.ic_port = config['port'];
+	this.ic_user = config['user'];
+	this.ic_password = config['password'];
+	this.ic_dbname = config['database'];
+
+	/* helper objects */
+	this.ic_log = log;
+
+	/* dynamic state */
+	this.ic_connstart = null;	/* time connect started */
+	this.ic_conndone = null;	/* time connect completed */
+	this.ic_client = null;		/* influxdb client */
+
+	mod_events.EventEmitter.call(this);
+}
+
+mod_util.inherits(InfluxClient, mod_events.EventEmitter);
+
+InfluxClient.prototype.connect = function ()
+{
+	var self = this;
+
+	mod_assertplus.ok(this.ic_connstart === null,
+	    'connect() already called');
+	this.ic_connstart = new Date();
+
+	this.ic_log.debug({
+	    'host': this.ic_host,
+	    'port': this.ic_port,
+	    'user': this.ic_user,
+	    'dbname': this.ic_dbname
+	}, 'connect: start');
+
+	this.ic_client = mod_influx(this.ic_host, this.ic_port,
+	    this.ic_user, this.ic_password, this.ic_dbname);
+
+	this.ic_client.getSeriesNames(function (err) {
+		if (err) {
+			self.ic_log.error(err, 'connect: error');
+			self.emit('error', err);
+		} else {
+			self.ic_conndone = new Date();
+			self.ic_log.debug('connected');
+			self.emit('connect');
+		}
+	});
+};
+
+InfluxClient.prototype.influx = function ()
+{
+	mod_assertplus.ok(this.ic_conndone !== null,
+	    'connect() has not completed successfully');
+	return (this.ic_client);
+};
+
+main();

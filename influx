@@ -68,7 +68,7 @@ var icHandlers = {
 	}
     },
     'query': {
-        'exec': cmdQuery,
+	'exec': cmdQuery,
 	'validate': function (_, argv) {
 		if (argv.length === 0)
 			return (new Error('expected query'));
@@ -79,7 +79,7 @@ var icHandlers = {
     },
     'series': {
 	'exec': cmdSeries,
-        'validate': function (_, argv) {
+	'validate': function (_, argv) {
 		if (argv.length !== 0)
 			return (new Error('unexpected arguments'));
 		return (null);
@@ -146,7 +146,6 @@ function fatal(err)
 function cmdBackfill(client, _, argv)
 {
 	var series, start, end, interval, template;
-	var points, timestamp, point;
 
 	series = argv[0];
 	start = Date.parse(argv[1]);
@@ -223,10 +222,10 @@ function icDumpTable(table)
 		var rv = {
 		    'label': label.toUpperCase(),
 		    'width': widths[i]
-		}
+		};
 		if (table.points.length > 0 &&
 		    typeof (table.points[0][i]) == 'number')
-		    	rv['align'] = 'right';
+			rv['align'] = 'right';
 		return (rv);
 	});
 
